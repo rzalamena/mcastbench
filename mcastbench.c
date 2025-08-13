@@ -120,7 +120,6 @@ mcastbench_get_ifinfo(struct mcastbench_options *opts, const char *ifname)
 	struct sockaddr_in6 *sin6;
 	unsigned int index;
 	bool found_address = false;
-	char addr_str[INET6_ADDRSTRLEN];
 
 	snprintf(opts->if_name, sizeof(opts->if_name), "%s", ifname);
 	index = if_nametoindex(opts->if_name);
@@ -169,10 +168,6 @@ mcastbench_get_ifinfo(struct mcastbench_options *opts, const char *ifname)
 		fprintf(stderr, "%s: no interface address found\n", __func__);
 		return -1;
 	}
-
-	inet_ntop(opts->ipv6 ? AF_INET6 : AF_INET, &opts->if_address,
-	    addr_str, sizeof(addr_str));
-	printf("interface %s (address %s) selected\n", opts->if_name, addr_str);
 
 	return 0;
 }
@@ -447,6 +442,7 @@ main(int argc, char *argv[])
 {
 	int opt;
 	struct event ev_term, ev_int;
+	char addr_str[INET6_ADDRSTRLEN];
 	static struct mcastbench_options mb_opts;
 
 	/* Default configuration */
@@ -520,6 +516,11 @@ main(int argc, char *argv[])
 	signal_set(&ev_int, SIGINT, signal_handler, NULL);
 	signal_add(&ev_term, NULL);
 	signal_add(&ev_int, NULL);
+
+	inet_ntop(mb_opts.ipv6 ? AF_INET6 : AF_INET, &mb_opts.if_address,
+	    addr_str, sizeof(addr_str));
+	printf("interface %s (address %s) selected\n", mb_opts.if_name,
+	    addr_str);
 
 	if (mb_opts.mode == MBOM_SENDER)
 		mcastbench_start_sender(&mb_opts);
