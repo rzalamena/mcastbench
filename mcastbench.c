@@ -262,8 +262,7 @@ mcastbench_socket_v6(struct mcastbench_socket *sock, const struct in6_addr *i6a,
 }
 
 static void
-mcastbench_socket_bind(struct mcastbench_socket *sock,
-    struct mcastbench_options *opts)
+mcastbench_socket_bind(struct mcastbench_socket *sock)
 {
 	if (bind(sock->fd, &sock->group.sa, sock->grouplen) == -1)
 		err(1, "bind");
@@ -384,62 +383,92 @@ mcastbench_socket_ipv6_join_source(const struct mcastbench_options *opts,
 }
 
 static void
-mcastbench_start_sender(struct mcastbench_options *opts)
+mcastbench_start_sender_socket(struct mcastbench_options *opts,
+    struct mcastbench_socket *sock)
 {
 	struct timeval tv;
 
 	if (opts->ipv6) {
-		mcastbench_socket_v6(&opts->sockets[0], &opts->mcast_address.v6,
-		    opts->port);
-		mcastbench_socket_ipv6_set_if(&opts->sockets[0],
-		    opts->if_index);
-		mcastbench_socket_ipv6_set_ttl(&opts->sockets[0], opts->ttl);
+		mcastbench_socket_v6(sock, &opts->mcast_address.v6, opts->port);
+		mcastbench_socket_ipv6_set_if(sock, opts->if_index);
+		mcastbench_socket_ipv6_set_ttl(sock, opts->ttl);
 	} else {
-		mcastbench_socket_v4(&opts->sockets[0], &opts->mcast_address.v4,
-		    opts->port);
-		mcastbench_socket_ipv4_set_if(&opts->sockets[0],
-		    opts->if_index);
-		mcastbench_socket_ipv4_set_ttl(&opts->sockets[0], opts->ttl);
+		mcastbench_socket_v4(sock, &opts->mcast_address.v4, opts->port);
+		mcastbench_socket_ipv4_set_if(sock, opts->if_index);
+		mcastbench_socket_ipv4_set_ttl(sock, opts->ttl);
 	}
 
 	tv.tv_sec = 1;
 	tv.tv_usec = 0;
-	event_add(&opts->sockets[0].ev_timer, &tv);
+	event_add(&sock->ev_timer, &tv);
+}
+
+static void
+mcastbench_start_sender(struct mcastbench_options *opts)
+{
+	size_t i;
+
+	for (i = 0; i < opts->sockets_size; i++) {
+		if (opts->ipv6)
+			opts->mcast_address.v6.s6_addr16[7] =
+			    htons((uint16_t)
+			    (ntohs(opts->mcast_address.v6.s6_addr16[7]) + 1));
+		else
+			opts->mcast_address.v4.s_addr =
+			    htonl(ntohl(opts->mcast_address.v4.s_addr) + 1);
+
+		mcastbench_start_sender_socket(opts, &opts->sockets[i]);
+	}
+}
+
+static void
+mcastbench_start_listener_socket(struct mcastbench_options *opts,
+    struct mcastbench_socket *sock)
+{
+	if (opts->ipv6) {
+		mcastbench_socket_v6(sock, &opts->mcast_address.v6, opts->port);
+		mcastbench_socket_bind(sock);
+		mcastbench_socket_ipv6_set_if(sock, opts->if_index);
+		if (opts->use_source)
+			mcastbench_socket_ipv6_join_source(opts, sock);
+		else
+			mcastbench_socket_ipv6_join(opts, sock);
+	} else {
+		mcastbench_socket_v4(sock, &opts->mcast_address.v4, opts->port);
+		mcastbench_socket_bind(sock);
+		mcastbench_socket_ipv4_set_if(sock, opts->if_index);
+		if (opts->use_source)
+			mcastbench_socket_ipv4_join_source(opts, sock);
+		else
+			mcastbench_socket_ipv4_join(opts, sock);
+	}
+
+	event_add(&sock->ev_read, NULL);
 }
 
 static void
 mcastbench_start_listener(struct mcastbench_options *opts)
 {
-	if (opts->ipv6) {
-		mcastbench_socket_v6(&opts->sockets[0], &opts->mcast_address.v6,
-		    opts->port);
-		mcastbench_socket_bind(&opts->sockets[0], opts);
-		mcastbench_socket_ipv6_set_if(&opts->sockets[0],
-		    opts->if_index);
-		if (opts->use_source)
-			mcastbench_socket_ipv6_join_source(opts,
-			    &opts->sockets[0]);
-		else
-			mcastbench_socket_ipv6_join(opts, &opts->sockets[0]);
-	} else {
-		mcastbench_socket_v4(&opts->sockets[0], &opts->mcast_address.v4,
-		    opts->port);
-		mcastbench_socket_bind(&opts->sockets[0], opts);
-		mcastbench_socket_ipv4_set_if(&opts->sockets[0],
-		    opts->if_index);
-		if (opts->use_source)
-			mcastbench_socket_ipv4_join_source(opts,
-			    &opts->sockets[0]);
-		else
-			mcastbench_socket_ipv4_join(opts, &opts->sockets[0]);
-	}
+	size_t i;
 
-	event_add(&opts->sockets[0].ev_read, NULL);
+	for (i = 0; i < opts->sockets_size; i++) {
+		if (opts->ipv6)
+			opts->mcast_address.v6.s6_addr16[7] =
+			    htons((uint16_t)
+			    (ntohs(opts->mcast_address.v6.s6_addr16[7]) + 1));
+		else
+			opts->mcast_address.v4.s_addr =
+			    htonl(ntohl(opts->mcast_address.v4.s_addr) + 1);
+
+		mcastbench_start_listener_socket(opts, &opts->sockets[i]);
+	}
 }
 
 int
 main(int argc, char *argv[])
 {
+	char *endp;
+	long sockets_count;
 	int opt;
 	struct event ev_term, ev_int;
 	char addr_str[INET6_ADDRSTRLEN];
@@ -450,7 +479,7 @@ main(int argc, char *argv[])
 	mb_opts.port = 50123;
 	mb_opts.mode = MBOM_SENDER;
 
-	while ((opt = getopt(argc, argv, "6hi:l")) != -1) {
+	while ((opt = getopt(argc, argv, "6hi:ln:")) != -1) {
 		switch (opt) {
 		case '6':
 			mb_opts.ipv6 = true;
@@ -460,10 +489,33 @@ main(int argc, char *argv[])
 			break;
 		case 'i':
 			if (mcastbench_get_ifinfo(&mb_opts, optarg) == -1)
-				return 1;
+				return -1;
 			break;
 		case 'l':
 			mb_opts.mode = MBOM_LISTENER;
+			break;
+		case 'n':
+			errno = 0;
+			sockets_count = strtol(optarg, &endp, 10);
+			if (endp == optarg || *endp != '\0') {
+				fprintf(stderr, "invalid sockets amount: %s\n",
+				    optarg);
+				return -1;
+			}
+			if (sockets_count < 1) {
+				fprintf(stderr,
+				    "must have a positive amount of sockets: %s\n",
+				    optarg);
+				return -1;
+			}
+			if (sockets_count > 1024) {
+				fprintf(stderr,
+				    "too many sockets: %s\n",
+				    optarg);
+				return -1;
+			}
+
+			mb_opts.sockets_size = (size_t)sockets_count;
 			break;
 
 		default:
@@ -507,7 +559,8 @@ main(int argc, char *argv[])
 	}
 
 	/* TODO configurable amount of sockets */
-	mb_opts.sockets = calloc(1, sizeof(struct mcastbench_socket));
+	mb_opts.sockets = calloc(mb_opts.sockets_size,
+	    sizeof(struct mcastbench_socket));
 	if (mb_opts.sockets == NULL)
 		err(1, "calloc");
 
