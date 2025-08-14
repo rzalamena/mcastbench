@@ -409,6 +409,8 @@ mcastbench_start_sender(struct mcastbench_options *opts)
 	size_t i;
 
 	for (i = 0; i < opts->sockets_size; i++) {
+		mcastbench_start_sender_socket(opts, &opts->sockets[i]);
+
 		if (opts->ipv6)
 			opts->mcast_address.v6.s6_addr16[7] =
 			    htons((uint16_t)
@@ -417,7 +419,6 @@ mcastbench_start_sender(struct mcastbench_options *opts)
 			opts->mcast_address.v4.s_addr =
 			    htonl(ntohl(opts->mcast_address.v4.s_addr) + 1);
 
-		mcastbench_start_sender_socket(opts, &opts->sockets[i]);
 	}
 }
 
@@ -452,6 +453,8 @@ mcastbench_start_listener(struct mcastbench_options *opts)
 	size_t i;
 
 	for (i = 0; i < opts->sockets_size; i++) {
+		mcastbench_start_listener_socket(opts, &opts->sockets[i]);
+
 		if (opts->ipv6)
 			opts->mcast_address.v6.s6_addr16[7] =
 			    htons((uint16_t)
@@ -459,8 +462,6 @@ mcastbench_start_listener(struct mcastbench_options *opts)
 		else
 			opts->mcast_address.v4.s_addr =
 			    htonl(ntohl(opts->mcast_address.v4.s_addr) + 1);
-
-		mcastbench_start_listener_socket(opts, &opts->sockets[i]);
 	}
 }
 
@@ -478,6 +479,7 @@ main(int argc, char *argv[])
 	mb_opts.ttl = 8;
 	mb_opts.port = 50123;
 	mb_opts.mode = MBOM_SENDER;
+	mb_opts.sockets_size = 1;
 
 	while ((opt = getopt(argc, argv, "6hi:ln:")) != -1) {
 		switch (opt) {
