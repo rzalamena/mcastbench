@@ -58,6 +58,11 @@ struct mcastbench_socket {
 	struct event ev_timer;
 };
 
+union address {
+	struct in_addr v4;
+	struct in6_addr v6;
+};
+
 /* Multicast bench configuration options. */
 struct mcastbench_options {
 	bool ipv6;
@@ -68,21 +73,12 @@ struct mcastbench_options {
 
 	char if_name[IFNAMSIZ];
 	int if_index;
-	union {
-		struct in_addr v4;
-		struct in6_addr v6;
-	} if_address;
+	union address if_address;
 
-	union {
-		struct in_addr v4;
-		struct in6_addr v6;
-	} mcast_address;
+	union address mcast_address;
 
-	bool use_source;
-	union {
-		struct in_addr v4;
-		struct in6_addr v6;
-	} mcast_source;
+	size_t mcast_sources_size;
+	union address *mcast_sources;
 
 	size_t sockets_size;
 	struct mcastbench_socket *sockets;
@@ -333,15 +329,19 @@ mcastbench_socket_ipv4_join_source(const struct mcastbench_options *opts,
     struct mcastbench_socket *sock)
 {
 	struct ip_mreq_source imr;
+	int i;
 
 	memset(&imr, 0, sizeof(imr));
 	imr.imr_multiaddr = sock->group.sin.sin_addr;
 	imr.imr_interface = opts->if_address.v4;
-	imr.imr_sourceaddr = opts->mcast_source.v4;
-	if (setsockopt(sock->fd, IPPROTO_IP, IP_ADD_SOURCE_MEMBERSHIP, &imr,
-	    sizeof(imr)) == -1)
-		fprintf(stderr, "%s: setsockopt: %s\n", __func__,
-		    strerror(errno));
+
+	for (i = 0; i < opts->mcast_sources_size; i++) {
+		imr.imr_sourceaddr = opts->mcast_sources[i].v4;
+		if (setsockopt(sock->fd, IPPROTO_IP, IP_ADD_SOURCE_MEMBERSHIP,
+		    &imr, sizeof(imr)) == -1)
+			fprintf(stderr, "%s: setsockopt: %s\n", __func__,
+			    strerror(errno));
+	}
 }
 
 static void
@@ -365,6 +365,7 @@ mcastbench_socket_ipv6_join_source(const struct mcastbench_options *opts,
 {
 	struct group_source_req gsr;
 	struct sockaddr_in6 *sin6;
+	int i;
 
 	memset(&gsr, 0, sizeof(gsr));
 	gsr.gsr_interface = (unsigned int)opts->if_index;
@@ -375,11 +376,13 @@ mcastbench_socket_ipv6_join_source(const struct mcastbench_options *opts,
 
 	sin6 = (struct sockaddr_in6 *)&gsr.gsr_source;
 	sin6->sin6_family = AF_INET6;
-	sin6->sin6_addr = opts->mcast_source.v6;
-	if (setsockopt(sock->fd, IPPROTO_IPV6, MCAST_JOIN_SOURCE_GROUP, &gsr,
-	    sizeof(gsr)) == -1)
-		fprintf(stderr, "%s: setsockopt: %s\n", __func__,
-		    strerror(errno));
+	for (i = 0; i < opts->mcast_sources_size; i++) {
+		sin6->sin6_addr = opts->mcast_sources[i].v6;
+		if (setsockopt(sock->fd, IPPROTO_IPV6, MCAST_JOIN_SOURCE_GROUP,
+		    &gsr, sizeof(gsr)) == -1)
+			fprintf(stderr, "%s: setsockopt: %s\n", __func__,
+			    strerror(errno));
+	}
 }
 
 static void
@@ -430,7 +433,7 @@ mcastbench_start_listener_socket(struct mcastbench_options *opts,
 		mcastbench_socket_v6(sock, &opts->mcast_address.v6, opts->port);
 		mcastbench_socket_bind(sock);
 		mcastbench_socket_ipv6_set_if(sock, opts->if_index);
-		if (opts->use_source)
+		if (opts->mcast_sources_size > 0)
 			mcastbench_socket_ipv6_join_source(opts, sock);
 		else
 			mcastbench_socket_ipv6_join(opts, sock);
@@ -438,7 +441,7 @@ mcastbench_start_listener_socket(struct mcastbench_options *opts,
 		mcastbench_socket_v4(sock, &opts->mcast_address.v4, opts->port);
 		mcastbench_socket_bind(sock);
 		mcastbench_socket_ipv4_set_if(sock, opts->if_index);
-		if (opts->use_source)
+		if (opts->mcast_sources_size > 0)
 			mcastbench_socket_ipv4_join_source(opts, sock);
 		else
 			mcastbench_socket_ipv4_join(opts, sock);
@@ -471,6 +474,7 @@ main(int argc, char *argv[])
 	char *endp;
 	long sockets_count;
 	int opt;
+	int i;
 	struct event ev_term, ev_int;
 	char addr_str[INET6_ADDRSTRLEN];
 	static struct mcastbench_options mb_opts;
@@ -529,12 +533,7 @@ main(int argc, char *argv[])
 		fprintf(stderr, "missing multicast group address argument\n");
 		usage();
 	}
-	if (mb_opts.mode == MBOM_LISTENER) {
-		if ((argc - optind) > 2) {
-			fprintf(stderr, "too many arguments\n");
-			usage();
-		}
-	} else {
+	if (mb_opts.mode == MBOM_SENDER) {
 		if ((argc - optind) > 1) {
 			fprintf(stderr, "too many arguments\n");
 			usage();
@@ -547,22 +546,28 @@ main(int argc, char *argv[])
 		    argv[optind]);
 		return 1;
 	}
+	optind++;
 
-	/* Check for extra source argument */
-	if ((argc - optind) == 2) {
-		mb_opts.use_source = true;
-		if (inet_pton(mb_opts.ipv6 ? AF_INET6 : AF_INET,
-		    argv[optind + 1], &mb_opts.mcast_source) != 1) {
-			fprintf(stderr,
-			    "invalid multicast source address: %s\n",
-			    argv[optind + 1]);
-			return 1;
+	/* Validate source address(es) */
+	mb_opts.mcast_sources_size = argc - optind;
+	if (mb_opts.mcast_sources_size > 0) {
+		mb_opts.mcast_sources =
+		    calloc(mb_opts.mcast_sources_size, sizeof(union address));
+
+		for (i = 0; i < mb_opts.mcast_sources_size; i++) {
+			if (inet_pton(mb_opts.ipv6 ? AF_INET6 : AF_INET,
+			    argv[optind], &mb_opts.mcast_sources[i]) != 1) {
+				fprintf(stderr,
+				    "invalid multicast source address: %s\n",
+				    argv[optind + 1]);
+				return 1;
+			}
+			optind++;
 		}
 	}
 
-	/* TODO configurable amount of sockets */
-	mb_opts.sockets = calloc(mb_opts.sockets_size,
-	    sizeof(struct mcastbench_socket));
+	mb_opts.sockets =
+	    calloc(mb_opts.sockets_size, sizeof(struct mcastbench_socket));
 	if (mb_opts.sockets == NULL)
 		err(1, "calloc");
 
